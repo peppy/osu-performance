@@ -586,20 +586,20 @@ void Processor::queryAllBeatmapDifficulties(u32 numThreads)
 	tlog::info() << "Retrieving all beatmap difficulties.";
 	auto progress = tlog::progress(numBeatmaps);
 
-	std::vector<std::shared_ptr<DatabaseConnection>> dbSlaveConnections;
+	std::vector<std::shared_ptr<DatabaseConnection>> dbConnections;
 	for (u32 i = 0; i < numThreads; ++i)
-		dbSlaveConnections.emplace_back(newDBConnectionSlave());
+		dbConnections.emplace_back(newDBConnectionSlave());
 
 	ThreadPool threadPool{numThreads};
 	s32 threadIdx = 0;
 
 	for (s32 begin = 0; begin < maxBeatmapId; begin += step)
 	{
-		auto& dbSlave = *dbSlaveConnections[threadIdx];
+		auto& db = *dbConnections[threadIdx];
 		threadIdx = (threadIdx + 1) % numThreads;
 
 		threadPool.EnqueueTask([&, begin]() {
-			queryBeatmapDifficulty(dbSlave, begin, std::min(begin + step, maxBeatmapId + 1));
+			queryBeatmapDifficulty(db, begin, std::min(begin + step, maxBeatmapId + 1));
 
 			progress.update(_beatmaps.size());
 		});
@@ -617,7 +617,7 @@ void Processor::queryAllBeatmapDifficulties(u32 numThreads)
 	);
 }
 
-bool Processor::queryBeatmapDifficulty(DatabaseConnection& dbSlave, s32 startId, s32 endId)
+bool Processor::queryBeatmapDifficulty(DatabaseConnection& db, s32 startId, s32 endId)
 {
 	std::string query = StrFormat(
 		"SELECT `osu_beatmaps`.`beatmap_id`,`countNormal`,`mods`,`attrib_id`,`value`,`approved`,`score_version`, `countSpinner` "
@@ -632,7 +632,7 @@ bool Processor::queryBeatmapDifficulty(DatabaseConnection& dbSlave, s32 startId,
 	else
 		query += StrFormat(" AND `osu_beatmaps`.`beatmap_id`>={0} AND `osu_beatmaps`.`beatmap_id`<{1}", startId, endId);
 
-	auto res = dbSlave.Query(query);
+	auto res = db.Query(query);
 
 	bool success = res.NumRows() != 0;
 
@@ -771,13 +771,13 @@ void Processor::pollAndProcessNewScores()
 	}
 }
 
-void Processor::pollAndProcessNewBeatmapSets(DatabaseConnection& dbSlave)
+void Processor::pollAndProcessNewBeatmapSets(DatabaseConnection& db)
 {
 	_lastBeatmapSetPollTime = steady_clock::now();
 
 	tlog::info() << "Retrieving new beatmap sets.";
 
-	auto res = dbSlave.Query(StrFormat(
+	auto res = db.Query(StrFormat(
 		"SELECT `beatmap_id`, `approved_date` "
 		"FROM `osu_beatmapsets` JOIN `osu_beatmaps` ON `osu_beatmapsets`.`beatmapset_id` = `osu_beatmaps`.`beatmapset_id` "
 		"WHERE `approved_date` > '{0}' "
@@ -790,7 +790,7 @@ void Processor::pollAndProcessNewBeatmapSets(DatabaseConnection& dbSlave)
 	while (res.NextRow())
 	{
 		_lastApprovedDate = (std::string)res[1];
-		queryBeatmapDifficulty(dbSlave, res[0]);
+		queryBeatmapDifficulty(db, res[0]);
 
 		_pDataDog->Increment("osu.pp.difficulty.required_retrieval", 1, { StrFormat("mode:{0}", GamemodeTag(_gamemode)) });
 	}
@@ -873,7 +873,7 @@ User Processor::processSingleUserGeneric(
 	static const f32 s_notableEventRatingThreshold = 1.0f / 21.5f;
 	static const f32 s_notableEventRatingDifferenceMinimum = 5.0f;
 
-	auto res = dbSlave.Query(StrFormat(
+	auto res = db.Query(StrFormat(
 		"SELECT "
 		"`score_id`,"
 		"`user_id`,"
@@ -924,7 +924,7 @@ User Processor::processSingleUserGeneric(
 				if (selectedScoreId == scoreId)
 				{
 					lock.Unlock();
-					queryBeatmapDifficulty(dbSlave, beatmapId);
+					queryBeatmapDifficulty(db, beatmapId);
 					lock.Lock();
 					beatmapIt = _beatmaps.find(beatmapId);
 
@@ -998,7 +998,7 @@ User Processor::processSingleUserGeneric(
 		const auto& score = scoresThatNeedDBUpdate.front();
 
 		// Obtain user's previous pp rating for determining the difference
-		auto res = dbSlave.Query(StrFormat(
+		auto res = db.Query(StrFormat(
 			"SELECT `{0}` FROM `osu_user_stats{1}` WHERE `user_id`={2}",
 			_config.UserPPColumnName,
 			GamemodeSuffix(_gamemode),
